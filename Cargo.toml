@@ -1,9 +1,9 @@
 [package]
 name = "blue-noise"
-version = "0.1.2"
+version = "0.2.0"
 authors = ["Matthew Blode <m@blode.co>"]
-edition = "2018"
-description = "Black and white image dithering using blue noise"
+edition = "2021"
+description = "High-quality blue noise generation and dithering using the void-and-cluster algorithm"
 documentation = "https://docs.rs/blue-noise"
 readme = "README.md"
 repository = "https://github.com/mblode/blue-noise/"
@@ -12,5 +12,17 @@ keywords = ["ditherpunk", "noise", "dithering", "dither", "blue-noise"]
 categories = ["command-line-utilities", "multimedia"]
 
 [dependencies]
-image = "0.23.12"
-clap = { version = "3.0.0-beta.2", features = ["yaml"] }
+clap = { version = "4.5", features = ["derive"] }
+image = "0.25"
+rustfft = "6.4"
+rand = "0.8"
+thiserror = "2.0"
+anyhow = "1.0"
+indicatif = "0.17"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "blue_noise_benchmark"
+harness = false

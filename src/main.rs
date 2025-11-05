@@ -1,55 +1,222 @@
-use clap::{App, load_yaml};
-use image::{Luma, RgbImage, Rgb};
+/**
+ * Blue Noise CLI - Modern command-line interface for blue noise generation and dithering
+ */
 
-fn is_bright(noise_color: &Luma<u8>, picture_color: &Luma<u8>) -> bool {
-    let noise_luma = noise_color.0;
-    let picture_luma = picture_color.0;
-    if picture_luma[0] > noise_luma[0] {
-        true
-    } else {
-        false
-    }
+mod dither;
+mod generator;
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+use dither::{apply_dithering, BlueNoiseTexture, Color, DitherOptions};
+use generator::{save_blue_noise_to_png, BlueNoiseConfig, BlueNoiseGenerator};
+
+/// Blue noise generation and dithering tools
+#[derive(Parser)]
+#[command(name = "blue-noise")]
+#[command(author = "Matthew Blode <m@blode.co>")]
+#[command(version = "0.2.0")]
+#[command(about = "Blue noise dithering and generation tools", long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
-fn wrap(m: u32, n: u32) -> u32 {
-    return n % m;
+#[derive(Subcommand)]
+enum Commands {
+    /// Generate a blue noise texture using the void-and-cluster algorithm
+    Generate {
+        /// Output file path
+        #[arg(short, long, default_value = "blue-noise.png")]
+        output: PathBuf,
+
+        /// Texture size (width and height, must be the same)
+        #[arg(short, long, default_value = "128")]
+        size: usize,
+
+        /// Gaussian sigma value (1.5-2.5, higher = more spread)
+        #[arg(long, default_value = "1.9")]
+        sigma: f32,
+
+        /// Random seed for reproducibility
+        #[arg(long)]
+        seed: Option<u32>,
+
+        /// Show detailed generation progress
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
+    /// Apply blue noise dithering to an image
+    Dither {
+        /// Input image path
+        #[arg(short, long)]
+        input: PathBuf,
+
+        /// Output image path
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Path to blue noise texture
+        #[arg(short, long, default_value = "blue-noise.png")]
+        noise: PathBuf,
+
+        /// Foreground color (hex)
+        #[arg(short, long, default_value = "#000000")]
+        foreground: String,
+
+        /// Background color (hex)
+        #[arg(short, long, default_value = "#ffffff")]
+        background: String,
+
+        /// Output width in pixels (maintains aspect ratio if height not specified)
+        #[arg(short, long)]
+        width: Option<u32>,
+
+        /// Output height in pixels (maintains aspect ratio if width not specified)
+        #[arg(long)]
+        height: Option<u32>,
+
+        /// Contrast adjustment (1.0 = normal, >1 = more contrast, <1 = less)
+        #[arg(short, long)]
+        contrast: Option<f32>,
+    },
 }
 
-fn main() {
-    let yaml = load_yaml!("cli.yaml");
-    let matches = App::from(yaml).get_matches();
+fn main() -> Result<()> {
+    let cli = Cli::parse();
 
-    let input_file = matches.value_of("INPUT").unwrap();
-    let output_file = matches.value_of("OUTPUT").unwrap();
-
-    let old_img = image::open(input_file).unwrap();
-    let mut old_img = old_img.grayscale();
-    let old_img = old_img.as_mut_luma8().unwrap();
-    let (old_width, old_height) = old_img.dimensions();
-
-    let noise_img = image::open("img/noise.png").unwrap();
-    let mut noise_img = noise_img.grayscale();
-    let noise_img = noise_img.as_mut_luma8().unwrap();
-    let (noise_width, noise_height) = noise_img.dimensions();
-
-    let mut new_img = RgbImage::new(old_width, old_height);
-
-    for x in 0..old_width {
-        for y in 0..old_height {
-            let wrap_x = wrap(noise_width, x);
-            let wrap_y = wrap(noise_height, y);
-
-            let noise_pixel = noise_img.get_pixel_mut(wrap_x, wrap_y);
-            let old_pixel = old_img.get_pixel_mut(x, y);
-
-            if is_bright(noise_pixel, old_pixel) {
-                new_img.put_pixel(x, y, Rgb([255, 255, 255]));
-            } else {
-                new_img.put_pixel(x, y, Rgb([0, 0, 0]));
+    match cli.command {
+        Commands::Generate {
+            output,
+            size,
+            sigma,
+            seed,
+            verbose,
+        } => {
+            // Validate inputs
+            if size < 8 || size > 512 {
+                anyhow::bail!("Size must be between 8 and 512");
             }
+            if sigma < 1.0 || sigma > 3.0 {
+                anyhow::bail!("Sigma must be between 1.0 and 3.0");
+            }
+
+            if !verbose {
+                println!("Generating {}×{} blue noise texture", size, size);
+                println!("Sigma: {}", sigma);
+                if let Some(s) = seed {
+                    println!("Seed: {}", s);
+                }
+                println!("Output: {}", output.display());
+                println!();
+            }
+
+            // Create output directory if it doesn't exist
+            if let Some(parent) = output.parent() {
+                std::fs::create_dir_all(parent)
+                    .context("Failed to create output directory")?;
+            }
+
+            // Generate blue noise
+            let config = BlueNoiseConfig {
+                width: size,
+                height: size,
+                sigma,
+                seed,
+                verbose,
+                ..Default::default()
+            };
+
+            let generator = BlueNoiseGenerator::new(config)
+                .context("Failed to create generator")?;
+            let result = generator.generate()
+                .context("Failed to generate blue noise")?;
+
+            // Save to file
+            save_blue_noise_to_png(&result, &output)
+                .context("Failed to save blue noise texture")?;
+
+            println!();
+            println!("Done!");
+        }
+
+        Commands::Dither {
+            input,
+            output,
+            noise,
+            foreground,
+            background,
+            width,
+            height,
+            contrast,
+        } => {
+            // Validate inputs
+            if !input.exists() {
+                anyhow::bail!("Input file does not exist: {}", input.display());
+            }
+            if !noise.exists() {
+                anyhow::bail!("Noise texture does not exist: {}", noise.display());
+            }
+
+            // Parse colors
+            let fg = Color::from_hex(&foreground)
+                .context("Failed to parse foreground color")?;
+            let bg = Color::from_hex(&background)
+                .context("Failed to parse background color")?;
+
+            // Validate contrast
+            if let Some(c) = contrast {
+                if c <= 0.0 {
+                    anyhow::bail!("Contrast must be positive");
+                }
+            }
+
+            println!("Processing: {}", input.display());
+            println!("Noise texture: {}", noise.display());
+            println!("Output: {}", output.display());
+            if let (Some(w), Some(h)) = (width, height) {
+                println!("Dimensions: {}×{}", w, h);
+            } else if let Some(w) = width {
+                println!("Width: {} (maintaining aspect ratio)", w);
+            } else if let Some(h) = height {
+                println!("Height: {} (maintaining aspect ratio)", h);
+            }
+            if let Some(c) = contrast {
+                println!("Contrast: {}", c);
+            }
+            println!("Foreground: {}", foreground);
+            println!("Background: {}", background);
+            println!();
+
+            // Create output directory if it doesn't exist
+            if let Some(parent) = output.parent() {
+                std::fs::create_dir_all(parent)
+                    .context("Failed to create output directory")?;
+            }
+
+            // Load noise texture
+            let noise_texture = BlueNoiseTexture::load(&noise)
+                .context("Failed to load blue noise texture")?;
+
+            // Apply dithering
+            let options = DitherOptions {
+                foreground: fg,
+                background: bg,
+                width,
+                height,
+                contrast,
+            };
+
+            apply_dithering(&input, &output, &noise_texture, options)
+                .context("Failed to apply dithering")?;
+
+            println!("Dithered image saved to: {}", output.display());
+            println!();
+            println!("Done!");
         }
     }
 
-    new_img.save(&output_file).unwrap();
-    println!("File saved to {}", &output_file);
+    Ok(())
 }
