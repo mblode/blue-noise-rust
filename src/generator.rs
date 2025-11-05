@@ -128,10 +128,6 @@ pub enum GeneratorError {
     #[error("Width and height must be positive")]
     InvalidDimensions,
 
-    /// Width or height is not an integer value
-    #[error("Width and height must be integers")]
-    NonIntegerDimensions,
-
     /// Sigma parameter is zero or negative
     #[error("Sigma must be positive")]
     InvalidSigma,
@@ -215,9 +211,6 @@ pub struct BlueNoiseGenerator {
 }
 
 impl BlueNoiseGenerator {
-    /// Default constants
-    const DEFAULT_SIGMA: f32 = 1.9;
-    const DEFAULT_INITIAL_DENSITY: f32 = 0.1;
     const MAX_ITERATIONS_MULTIPLIER: usize = 10;
     const THRESHOLD_MAP_LEVELS: usize = 256;
 
@@ -813,20 +806,6 @@ impl BlueNoiseGenerator {
 }
 
 /**
- * Convenience function to generate a blue noise texture
- */
-pub fn generate_blue_noise(width: usize, height: usize, sigma: f32) -> Result<BlueNoiseResult> {
-    let config = BlueNoiseConfig {
-        width,
-        height,
-        sigma,
-        ..Default::default()
-    };
-    let generator = BlueNoiseGenerator::new(config)?;
-    generator.generate()
-}
-
-/**
  * Save blue noise texture to PNG file
  */
 pub fn save_blue_noise_to_png<P: AsRef<Path>>(
@@ -1077,17 +1056,6 @@ mod tests {
         // Should have values across the spectrum
         let non_empty_bins = histogram.iter().filter(|&&count| count > 0).count();
         assert!(non_empty_bins > 200, "Expected diverse distribution");
-    }
-
-    #[test]
-    fn test_convenience_function() {
-        let result = generate_blue_noise(16, 16, 1.5);
-        assert!(result.is_ok());
-
-        let result = result.unwrap();
-        assert_eq!(result.width, 16);
-        assert_eq!(result.height, 16);
-        assert_eq!(result.data.len(), 256);
     }
 
     #[test]

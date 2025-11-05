@@ -87,10 +87,6 @@ pub enum DitherError {
     /// Could not determine image dimensions
     #[error("Could not determine image dimensions")]
     InvalidDimensions,
-
-    /// Blue noise texture has no data
-    #[error("Blue noise texture is empty")]
-    EmptyNoiseTexture,
 }
 
 /// Result type for dithering operations
@@ -118,19 +114,6 @@ impl BlueNoiseTexture {
             data: gray.into_raw(),
             width: width as usize,
             height: height as usize,
-        })
-    }
-
-    /// Create from existing data
-    pub fn from_data(data: Vec<u8>, width: usize, height: usize) -> Result<Self> {
-        if data.is_empty() {
-            return Err(DitherError::EmptyNoiseTexture);
-        }
-
-        Ok(Self {
-            data,
-            width,
-            height,
         })
     }
 
@@ -215,32 +198,6 @@ pub fn apply_dithering<P: AsRef<Path>>(
     Ok(())
 }
 
-/// Apply ordered dithering using blue noise threshold map
-///
-/// This function can be used for more advanced dithering with custom level counts
-pub fn ordered_dither(
-    value: u8,
-    x: u32,
-    y: u32,
-    noise_texture: &BlueNoiseTexture,
-    levels: usize,
-) -> u8 {
-    let threshold = noise_texture.get(x, y);
-
-    let normalized = value as f32 / 255.0;
-    let step = 1.0 / levels as f32;
-    let quantized = (normalized / step).floor() as usize;
-    let fraction = (normalized % step) / step;
-
-    let output = if fraction > threshold as f32 / 255.0 {
-        (quantized + 1).min(levels - 1)
-    } else {
-        quantized
-    };
-
-    ((output * 255) / (levels - 1)) as u8
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,86 +268,5 @@ mod tests {
         assert!(options.width.is_none());
         assert!(options.height.is_none());
         assert!(options.contrast.is_none());
-    }
-
-    #[test]
-    fn test_blue_noise_texture_from_data() {
-        let data = vec![0u8, 128, 255, 64];
-        let texture = BlueNoiseTexture::from_data(data.clone(), 2, 2).unwrap();
-
-        assert_eq!(texture.width, 2);
-        assert_eq!(texture.height, 2);
-        assert_eq!(texture.data, data);
-    }
-
-    #[test]
-    fn test_blue_noise_texture_from_data_empty() {
-        let empty = vec![];
-        let result = BlueNoiseTexture::from_data(empty, 0, 0);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_blue_noise_texture_get_wrapping() {
-        let data = vec![10, 20, 30, 40]; // 2x2 texture
-        let texture = BlueNoiseTexture::from_data(data, 2, 2).unwrap();
-
-        // Direct access
-        assert_eq!(texture.get(0, 0), 10);
-        assert_eq!(texture.get(1, 0), 20);
-        assert_eq!(texture.get(0, 1), 30);
-        assert_eq!(texture.get(1, 1), 40);
-
-        // Test wrapping
-        assert_eq!(texture.get(2, 0), 10); // wraps to (0, 0)
-        assert_eq!(texture.get(3, 1), 40); // wraps to (1, 1)
-        assert_eq!(texture.get(0, 2), 10); // wraps to (0, 0)
-        assert_eq!(texture.get(5, 7), 40); // wraps to (1, 1)
-    }
-
-    #[test]
-    fn test_ordered_dither_binary() {
-        let data = vec![128u8; 64]; // 8x8 texture with all 128s
-        let texture = BlueNoiseTexture::from_data(data, 8, 8).unwrap();
-
-        // Test binary dithering (2 levels)
-        let result_low = ordered_dither(64, 0, 0, &texture, 2);
-        let result_high = ordered_dither(192, 0, 0, &texture, 2);
-
-        // Low value should map to 0, high value to 255
-        assert_eq!(result_low, 0);
-        assert_eq!(result_high, 255);
-    }
-
-    #[test]
-    fn test_ordered_dither_levels() {
-        let data = vec![0u8; 16]; // 4x4 texture with all 0s
-        let texture = BlueNoiseTexture::from_data(data, 4, 4).unwrap();
-
-        // With 4 levels, output should be in valid range
-        let levels = 4;
-        for value in [0, 85, 170, 255] {
-            let result = ordered_dither(value, 0, 0, &texture, levels);
-            // Result should be valid (0-255)
-            assert!(result <= 255);
-        }
-
-        // Test that different input values produce varied outputs
-        let result1 = ordered_dither(0, 0, 0, &texture, levels);
-        let result2 = ordered_dither(255, 0, 0, &texture, levels);
-        // Low and high values should map to different outputs
-        assert_ne!(result1, result2);
-    }
-
-    #[test]
-    fn test_ordered_dither_range() {
-        let data = vec![100u8; 16];
-        let texture = BlueNoiseTexture::from_data(data, 4, 4).unwrap();
-
-        // All outputs should be in valid range
-        for value in 0..=255 {
-            let result = ordered_dither(value, 0, 0, &texture, 2);
-            assert!(result <= 255);
-        }
     }
 }

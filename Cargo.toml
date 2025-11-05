@@ -1,8 +1,8 @@
 [package]
 name = "blue-noise"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Matthew Blode <m@blode.co>"]
-edition = "2021"
+edition = "2024"
 description = "High-quality blue noise generation and dithering using the void-and-cluster algorithm"
 documentation = "https://docs.rs/blue-noise"
 readme = "README.md"

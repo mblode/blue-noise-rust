@@ -93,9 +93,9 @@ pub mod generator;
 
 // Re-export main types for convenience
 pub use dither::{
-    apply_dithering, ordered_dither, BlueNoiseTexture, Color, DitherError, DitherOptions,
+    apply_dithering, BlueNoiseTexture, Color, DitherError, DitherOptions,
 };
 pub use generator::{
-    generate_blue_noise, save_blue_noise_to_png, BlueNoiseConfig, BlueNoiseGenerator,
+    save_blue_noise_to_png, BlueNoiseConfig, BlueNoiseGenerator,
     BlueNoiseResult, GeneratorError,
 };
