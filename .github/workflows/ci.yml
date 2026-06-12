@@ -75,7 +75,7 @@ jobs:
           components: clippy
 
       - name: Run clippy
-        run: cargo clippy --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   build:
     name: Build
@@ -91,6 +91,10 @@ jobs:
 
       - name: Build
         run: cargo build --release --verbose
+
+      - name: Check benchmark targets
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo bench --no-run --verbose
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

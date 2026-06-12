@@ -53,11 +53,14 @@ categories = ["command-line-utilities", "multimedia"]  # ✓ Valid categories
 ### ✅ Run Tests
 
 ```bash
-# All tests must pass
-cargo test --all-features
+# All tests and targets must pass
+cargo test --all-targets --all-features
 
 # Check for warnings
-cargo clippy --all-features -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Ensure benchmarks compile
+cargo bench --no-run
 
 # Check formatting
 cargo fmt --all -- --check
@@ -66,11 +69,8 @@ cargo fmt --all -- --check
 ### ✅ Verify Documentation
 
 ```bash
-# Build and view docs
-cargo doc --open --no-deps
-
-# Check for missing documentation
-cargo doc --all-features
+# Build docs and check for missing documentation
+cargo doc --all-features --no-deps
 ```
 
 ### ✅ Test Installation
@@ -101,11 +101,6 @@ If not already done:
    - FFT optimization
    - Modern CLI with subcommands
    ...
-   ```
-
-3. **Update lib.rs doc URL if needed**
-   ```rust
-   #![doc(html_root_url = "https://docs.rs/blue-noise/0.2.0")]
    ```
 
 ---
@@ -266,16 +261,10 @@ Follow [Semantic Versioning](https://semver.org/):
 - Change description
 ```
 
-### 3. Update lib.rs doc URL
-
-```rust
-#![doc(html_root_url = "https://docs.rs/blue-noise/0.2.1")]
-```
-
-### 4. Commit and Tag
+### 3. Commit and Tag
 
 ```bash
-git add Cargo.toml CHANGELOG.md src/lib.rs
+git add Cargo.toml Cargo.lock CHANGELOG.md
 git commit -m "Release v0.2.1"
 git tag v0.2.1
 git push origin main --tags
@@ -359,9 +348,10 @@ Fix any doc warnings or errors.
 cargo login <token>
 
 # Pre-publish checks
-cargo test --all-features
-cargo clippy --all-features -- -D warnings
-cargo doc --all-features
+cargo test --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo bench --no-run
+cargo doc --all-features --no-deps
 
 # Dry run
 cargo publish --dry-run
@@ -375,7 +365,6 @@ cargo install blue-noise
 # Update version
 # 1. Edit Cargo.toml version
 # 2. Update CHANGELOG.md
-# 3. Update lib.rs doc URL
 git commit -am "Release vX.Y.Z"
 git tag vX.Y.Z
 git push --tags

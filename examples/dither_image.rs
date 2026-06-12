@@ -10,9 +10,8 @@
  * Note: This example requires an input image file and a blue noise texture.
  * You can generate a blue noise texture first with the generate_texture example.
  */
-
 use blue_noise::{
-    apply_dithering, BlueNoiseConfig, BlueNoiseGenerator, BlueNoiseTexture, Color, DitherOptions,
+    BlueNoiseConfig, BlueNoiseGenerator, BlueNoiseTexture, Color, DitherOptions, apply_dithering,
     save_blue_noise_to_png,
 };
 
@@ -41,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let height = 256;
     let mut gradient_data = Vec::with_capacity((width * height * 3) as usize);
 
-    for y in 0..height {
+    for _y in 0..height {
         for x in 0..width {
             // Create a horizontal gradient from black to white
             let value = (x * 255 / (width - 1)) as u8;

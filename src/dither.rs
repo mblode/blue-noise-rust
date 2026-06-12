@@ -5,7 +5,6 @@
  * Blue noise dithering produces higher quality results than traditional
  * methods like Bayer dithering due to its even frequency distribution.
  */
-
 use image::{DynamicImage, ImageBuffer, Rgb, RgbImage};
 use std::path::Path;
 use thiserror::Error;
@@ -87,6 +86,17 @@ pub enum DitherError {
     /// Could not determine image dimensions
     #[error("Could not determine image dimensions")]
     InvalidDimensions,
+
+    /// Texture data length does not match the supplied dimensions
+    #[error("Texture data length {actual} does not match dimensions {width}x{height}")]
+    InvalidTextureData {
+        /// Supplied texture width
+        width: usize,
+        /// Supplied texture height
+        height: usize,
+        /// Supplied texture data length
+        actual: usize,
+    },
 }
 
 /// Result type for dithering operations
@@ -100,21 +110,40 @@ pub struct BlueNoiseTexture {
 }
 
 impl BlueNoiseTexture {
+    /// Create a blue noise texture from raw grayscale threshold data.
+    ///
+    /// The data must contain exactly `width * height` values.
+    pub fn from_data(data: Vec<u8>, width: usize, height: usize) -> Result<Self> {
+        let expected = width
+            .checked_mul(height)
+            .ok_or(DitherError::InvalidDimensions)?;
+
+        if width == 0 || height == 0 {
+            return Err(DitherError::InvalidDimensions);
+        }
+
+        if data.len() != expected {
+            return Err(DitherError::InvalidTextureData {
+                width,
+                height,
+                actual: data.len(),
+            });
+        }
+
+        Ok(Self {
+            data,
+            width,
+            height,
+        })
+    }
+
     /// Load blue noise texture from a file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let img = image::open(path)?;
         let gray = img.to_luma8();
         let (width, height) = gray.dimensions();
 
-        if width == 0 || height == 0 {
-            return Err(DitherError::InvalidDimensions);
-        }
-
-        Ok(Self {
-            data: gray.into_raw(),
-            width: width as usize,
-            height: height as usize,
-        })
+        Self::from_data(gray.into_raw(), width as usize, height as usize)
     }
 
     /// Get the noise value at the given coordinates (with tiling)
@@ -144,17 +173,14 @@ fn apply_contrast(img: DynamicImage, contrast: f32) -> DynamicImage {
     DynamicImage::ImageRgb8(rgb)
 }
 
-/// Apply blue noise dithering to an image
-pub fn apply_dithering<P: AsRef<Path>>(
-    input_path: P,
-    output_path: P,
+/// Apply blue noise dithering to an in-memory image.
+pub fn apply_dithering_to_image(
+    input: &DynamicImage,
     noise_texture: &BlueNoiseTexture,
     options: DitherOptions,
-) -> Result<()> {
-    // Load input image
-    let mut img = image::open(input_path)?;
+) -> RgbImage {
+    let mut img = input.clone();
 
-    // Resize if requested
     if let (Some(width), Some(height)) = (options.width, options.height) {
         img = img.resize(width, height, image::imageops::FilterType::Lanczos3);
     } else if let Some(width) = options.width {
@@ -163,25 +189,19 @@ pub fn apply_dithering<P: AsRef<Path>>(
         img = img.resize(u32::MAX, height, image::imageops::FilterType::Lanczos3);
     }
 
-    // Apply contrast if requested
     if let Some(contrast) = options.contrast {
         img = apply_contrast(img, contrast);
     }
 
-    // Convert to grayscale
     let gray = img.to_luma8();
     let (width, height) = gray.dimensions();
-
-    // Create output image
     let mut output: RgbImage = ImageBuffer::new(width, height);
 
-    // Apply dithering
     for y in 0..height {
         for x in 0..width {
             let pixel_luma = gray.get_pixel(x, y).0[0];
             let noise_luma = noise_texture.get(x, y);
 
-            // Compare: if picture is brighter than noise, use background color
             let color = if pixel_luma > noise_luma {
                 options.background
             } else {
@@ -191,6 +211,20 @@ pub fn apply_dithering<P: AsRef<Path>>(
             output.put_pixel(x, y, Rgb([color.r, color.g, color.b]));
         }
     }
+
+    output
+}
+
+/// Apply blue noise dithering to an image
+pub fn apply_dithering<P: AsRef<Path>>(
+    input_path: P,
+    output_path: P,
+    noise_texture: &BlueNoiseTexture,
+    options: DitherOptions,
+) -> Result<()> {
+    // Load input image
+    let img = image::open(input_path)?;
+    let output = apply_dithering_to_image(&img, noise_texture, options);
 
     // Save output
     output.save(output_path)?;
@@ -268,5 +302,43 @@ mod tests {
         assert!(options.width.is_none());
         assert!(options.height.is_none());
         assert!(options.contrast.is_none());
+    }
+
+    #[test]
+    fn test_blue_noise_texture_from_data() {
+        let texture = BlueNoiseTexture::from_data(vec![0, 64, 128, 255], 2, 2).unwrap();
+
+        assert_eq!(texture.get(0, 0), 0);
+        assert_eq!(texture.get(1, 0), 64);
+        assert_eq!(texture.get(2, 0), 0);
+        assert_eq!(texture.get(0, 2), 0);
+    }
+
+    #[test]
+    fn test_blue_noise_texture_from_data_rejects_invalid_dimensions() {
+        assert!(BlueNoiseTexture::from_data(vec![], 0, 1).is_err());
+        assert!(BlueNoiseTexture::from_data(vec![], usize::MAX, 2).is_err());
+    }
+
+    #[test]
+    fn test_blue_noise_texture_from_data_rejects_invalid_length() {
+        assert!(matches!(
+            BlueNoiseTexture::from_data(vec![0, 1, 2], 2, 2),
+            Err(DitherError::InvalidTextureData { .. })
+        ));
+    }
+
+    #[test]
+    fn test_apply_dithering_to_image() {
+        let input = DynamicImage::ImageRgb8(
+            RgbImage::from_vec(2, 1, vec![0, 0, 0, 255, 255, 255]).unwrap(),
+        );
+        let noise = BlueNoiseTexture::from_data(vec![128], 1, 1).unwrap();
+        let options = DitherOptions::default();
+
+        let output = apply_dithering_to_image(&input, &noise, options);
+
+        assert_eq!(output.get_pixel(0, 0).0, [0, 0, 0]);
+        assert_eq!(output.get_pixel(1, 0).0, [255, 255, 255]);
     }
 }

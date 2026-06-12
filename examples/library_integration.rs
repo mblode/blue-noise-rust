@@ -8,11 +8,11 @@
  * Run with:
  *   cargo run --example library_integration
  */
-
 use blue_noise::{
     BlueNoiseConfig, BlueNoiseGenerator, BlueNoiseTexture, Color, DitherOptions,
+    apply_dithering_to_image,
 };
-use image::{GrayImage, ImageBuffer, Luma, RgbImage};
+use image::{DynamicImage, RgbImage};
 
 fn create_test_image() -> RgbImage {
     // Create a 200×200 image with a radial gradient
@@ -21,7 +21,7 @@ fn create_test_image() -> RgbImage {
 
     let center_x = size as f32 / 2.0;
     let center_y = size as f32 / 2.0;
-    let max_dist = ((center_x * center_x + center_y * center_y) as f32).sqrt();
+    let max_dist = (center_x * center_x + center_y * center_y).sqrt();
 
     for y in 0..size {
         for x in 0..size {
@@ -35,48 +35,6 @@ fn create_test_image() -> RgbImage {
     }
 
     img
-}
-
-fn dither_in_memory(
-    input: &RgbImage,
-    noise_data: &[u8],
-    noise_width: usize,
-    noise_height: usize,
-    fg: Color,
-    bg: Color,
-) -> RgbImage {
-    let (width, height) = input.dimensions();
-    let mut output = RgbImage::new(width, height);
-
-    // Convert input to grayscale
-    let gray: GrayImage = ImageBuffer::from_fn(width, height, |x, y| {
-        let pixel = input.get_pixel(x, y);
-        let avg = (pixel[0] as u16 + pixel[1] as u16 + pixel[2] as u16) / 3;
-        Luma([avg as u8])
-    });
-
-    // Apply dithering
-    for y in 0..height {
-        for x in 0..width {
-            let pixel_luma = gray.get_pixel(x, y)[0];
-
-            // Get noise value with tiling
-            let noise_x = (x as usize) % noise_width;
-            let noise_y = (y as usize) % noise_height;
-            let noise_luma = noise_data[noise_y * noise_width + noise_x];
-
-            // Choose color based on threshold
-            let color = if pixel_luma > noise_luma {
-                bg
-            } else {
-                fg
-            };
-
-            output.put_pixel(x, y, image::Rgb([color.r, color.g, color.b]));
-        }
-    }
-
-    output
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -95,26 +53,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let generator = BlueNoiseGenerator::new(config)?;
     let noise_result = generator.generate()?;
-    println!("   ✓ Generated {}×{} texture", noise_result.width, noise_result.height);
+    println!(
+        "   ✓ Generated {}×{} texture",
+        noise_result.width, noise_result.height
+    );
+    let noise_texture =
+        BlueNoiseTexture::from_data(noise_result.data, noise_result.width, noise_result.height)?;
 
     // Step 2: Create test image in memory
     println!("\n2. Creating test image (radial gradient)...");
     let test_image = create_test_image();
-    println!("   ✓ Created {}×{} test image", test_image.width(), test_image.height());
+    println!(
+        "   ✓ Created {}×{} test image",
+        test_image.width(),
+        test_image.height()
+    );
 
     // Step 3: Perform in-memory dithering
     println!("\n3. Applying in-memory dithering...");
     let fg = Color::from_hex("#1a1a1a")?;
     let bg = Color::from_hex("#f5f5f5")?;
+    let options = DitherOptions {
+        foreground: fg,
+        background: bg,
+        width: None,
+        height: None,
+        contrast: None,
+    };
+    let test_image_dynamic = DynamicImage::ImageRgb8(test_image.clone());
 
-    let dithered = dither_in_memory(
-        &test_image,
-        &noise_result.data,
-        noise_result.width,
-        noise_result.height,
-        fg,
-        bg,
-    );
+    let dithered = apply_dithering_to_image(&test_image_dynamic, &noise_texture, options.clone());
     println!("   ✓ Dithering complete");
 
     // Step 4: Save results
@@ -138,15 +106,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let generator = BlueNoiseGenerator::new(config)?;
         let result = generator.generate()?;
+        let noise_texture = BlueNoiseTexture::from_data(result.data, result.width, result.height)?;
 
-        let dithered = dither_in_memory(
-            &test_image,
-            &result.data,
-            result.width,
-            result.height,
-            fg,
-            bg,
-        );
+        let dithered =
+            apply_dithering_to_image(&test_image_dynamic, &noise_texture, options.clone());
 
         let filename = format!("example-radial-seed-{}.png", seed);
         dithered.save(&filename)?;
@@ -156,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n✓ Library integration example complete!");
     println!("\nThis example showed:");
     println!("  - Generating blue noise in memory (no file I/O)");
-    println!("  - Custom in-memory dithering function");
+    println!("  - Dithering in memory with the public library API");
     println!("  - Creating test images programmatically");
     println!("  - Batch processing with different seeds");
     println!("  - Integration into your own image processing pipeline");

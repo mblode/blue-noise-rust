@@ -7,12 +7,12 @@
  * View HTML reports in:
  *   target/criterion/report/index.html
  */
-
 use blue_noise::{
-    apply_dithering, BlueNoiseConfig, BlueNoiseGenerator, BlueNoiseTexture, Color, DitherOptions,
+    BlueNoiseConfig, BlueNoiseGenerator, BlueNoiseTexture, Color, DitherOptions,
+    apply_dithering_to_image,
 };
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use image::{GrayImage, ImageBuffer, Luma};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use image::DynamicImage;
 
 /// Benchmark blue noise generation for different sizes
 fn bench_generation(c: &mut Criterion) {
@@ -29,16 +29,12 @@ fn bench_generation(c: &mut Criterion) {
             ..Default::default()
         };
 
-        group.bench_with_input(
-            BenchmarkId::new("power_of_two", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let generator = BlueNoiseGenerator::new(config.clone()).unwrap();
-                    black_box(generator.generate().unwrap())
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("power_of_two", size), size, |b, _| {
+            b.iter(|| {
+                let generator = BlueNoiseGenerator::new(config.clone()).unwrap();
+                black_box(generator.generate().unwrap())
+            });
+        });
     }
 
     // Test non-power-of-two size (no FFT optimization)
@@ -135,13 +131,11 @@ fn bench_dithering(c: &mut Criterion) {
             }
         }
 
-        let test_image =
-            image::RgbImage::from_vec(*size, *size, test_image_data.clone()).unwrap();
-        let filename = format!("/tmp/bench-test-{}.png", size);
-        test_image.save(&filename).unwrap();
+        let test_image = DynamicImage::ImageRgb8(
+            image::RgbImage::from_vec(*size, *size, test_image_data).unwrap(),
+        );
 
         group.bench_with_input(BenchmarkId::new("dither", size), size, |b, _| {
-            let output = format!("/tmp/bench-output-{}.png", size);
             let options = DitherOptions {
                 foreground: Color::new(0, 0, 0),
                 background: Color::new(255, 255, 255),
@@ -151,7 +145,11 @@ fn bench_dithering(c: &mut Criterion) {
             };
 
             b.iter(|| {
-                apply_dithering(&filename, &output, &noise_texture, options.clone()).unwrap()
+                black_box(apply_dithering_to_image(
+                    &test_image,
+                    &noise_texture,
+                    options.clone(),
+                ))
             });
         });
     }

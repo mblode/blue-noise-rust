@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-06-13
+
+### Fixed
+
+- Prevent a rare out-of-bounds panic during initial pattern generation when random value normalisation rounded up to `1.0`.
+- Reject generator dimensions that would overflow internal area or rank counters.
+- Compile benchmark and example targets as part of the documented release checks.
+- Fix the benchmark target by adding a validated in-memory blue noise texture constructor.
+- Remove duplicated CLI and rustdoc version metadata that could drift between releases.
+
+### Added
+
+- Add in-memory dithering support with `apply_dithering_to_image`.
+- Add `generate --width` and `generate --height` for rectangular texture generation.
+
+### Changed
+
+- Update generator energy incrementally after single-pixel changes, reducing repeated full blur recalculations during generation.
+
 ## [0.2.0] - 2025-01-05
 
 ### Added
@@ -153,5 +172,6 @@ let result = generator.generate()?;
 - Reproducible generation with seeds
 - Library API for integration into other projects
 
+[0.2.2]: https://github.com/mblode/blue-noise-rust/releases/tag/v0.2.2
 [0.2.0]: https://github.com/mblode/blue-noise/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/mblode/blue-noise/releases/tag/v0.1.2

@@ -7,7 +7,6 @@
  * Run with:
  *   cargo run --example generate_texture
  */
-
 use blue_noise::{BlueNoiseConfig, BlueNoiseGenerator, save_blue_noise_to_png};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

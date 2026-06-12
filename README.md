@@ -25,10 +25,13 @@ cargo build --release
 
 ```bash
 blue-noise generate --size 128 --output blue-noise.png
+blue-noise generate --width 256 --height 128 --output blue-noise-wide.png
 ```
 
 Options:
 - `--size` - Texture size in pixels (default: 128)
+- `--width` - Texture width in pixels (overrides `--size`)
+- `--height` - Texture height in pixels (overrides `--size`)
 - `--output` - Output file path
 - `--sigma` - Gaussian sigma, 1.0-3.0 (default: 1.9)
 - `--seed` - Random seed for reproducibility

@@ -1,7 +1,6 @@
 /**
  * Blue Noise CLI - Modern command-line interface for blue noise generation and dithering
  */
-
 mod dither;
 mod generator;
 
@@ -9,14 +8,14 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use dither::{apply_dithering, BlueNoiseTexture, Color, DitherOptions};
-use generator::{save_blue_noise_to_png, BlueNoiseConfig, BlueNoiseGenerator};
+use dither::{BlueNoiseTexture, Color, DitherOptions, apply_dithering};
+use generator::{BlueNoiseConfig, BlueNoiseGenerator, save_blue_noise_to_png};
 
 /// Blue noise generation and dithering tools
 #[derive(Parser)]
 #[command(name = "blue-noise")]
 #[command(author = "Matthew Blode <m@blode.co>")]
-#[command(version = "0.2.0")]
+#[command(version)]
 #[command(about = "Blue noise dithering and generation tools", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -31,9 +30,17 @@ enum Commands {
         #[arg(short, long, default_value = "blue-noise.png")]
         output: PathBuf,
 
-        /// Texture size (width and height, must be the same)
+        /// Default square texture size
         #[arg(short, long, default_value = "128")]
         size: usize,
+
+        /// Texture width in pixels (overrides --size)
+        #[arg(long)]
+        width: Option<usize>,
+
+        /// Texture height in pixels (overrides --size)
+        #[arg(long)]
+        height: Option<usize>,
 
         /// Gaussian sigma value (1.5-2.5, higher = more spread)
         #[arg(long, default_value = "1.9")]
@@ -91,20 +98,31 @@ fn main() -> Result<()> {
         Commands::Generate {
             output,
             size,
+            width,
+            height,
             sigma,
             seed,
             verbose,
         } => {
+            let width = width.unwrap_or(size);
+            let height = height.unwrap_or(size);
+
             // Validate inputs
-            if size < 8 || size > 512 {
+            if !(8..=512).contains(&size) {
                 anyhow::bail!("Size must be between 8 and 512");
             }
-            if sigma < 1.0 || sigma > 3.0 {
+            if !(8..=512).contains(&width) {
+                anyhow::bail!("Width must be between 8 and 512");
+            }
+            if !(8..=512).contains(&height) {
+                anyhow::bail!("Height must be between 8 and 512");
+            }
+            if !(1.0..=3.0).contains(&sigma) {
                 anyhow::bail!("Sigma must be between 1.0 and 3.0");
             }
 
             if !verbose {
-                println!("Generating {}×{} blue noise texture", size, size);
+                println!("Generating {}×{} blue noise texture", width, height);
                 println!("Sigma: {}", sigma);
                 if let Some(s) = seed {
                     println!("Seed: {}", s);
@@ -115,23 +133,23 @@ fn main() -> Result<()> {
 
             // Create output directory if it doesn't exist
             if let Some(parent) = output.parent() {
-                std::fs::create_dir_all(parent)
-                    .context("Failed to create output directory")?;
+                std::fs::create_dir_all(parent).context("Failed to create output directory")?;
             }
 
             // Generate blue noise
             let config = BlueNoiseConfig {
-                width: size,
-                height: size,
+                width,
+                height,
                 sigma,
                 seed,
                 verbose,
                 ..Default::default()
             };
 
-            let generator = BlueNoiseGenerator::new(config)
-                .context("Failed to create generator")?;
-            let result = generator.generate()
+            let generator =
+                BlueNoiseGenerator::new(config).context("Failed to create generator")?;
+            let result = generator
+                .generate()
                 .context("Failed to generate blue noise")?;
 
             // Save to file
@@ -161,16 +179,14 @@ fn main() -> Result<()> {
             }
 
             // Parse colors
-            let fg = Color::from_hex(&foreground)
-                .context("Failed to parse foreground color")?;
-            let bg = Color::from_hex(&background)
-                .context("Failed to parse background color")?;
+            let fg = Color::from_hex(&foreground).context("Failed to parse foreground color")?;
+            let bg = Color::from_hex(&background).context("Failed to parse background color")?;
 
             // Validate contrast
-            if let Some(c) = contrast {
-                if c <= 0.0 {
-                    anyhow::bail!("Contrast must be positive");
-                }
+            if let Some(c) = contrast
+                && c <= 0.0
+            {
+                anyhow::bail!("Contrast must be positive");
             }
 
             println!("Processing: {}", input.display());
@@ -192,13 +208,12 @@ fn main() -> Result<()> {
 
             // Create output directory if it doesn't exist
             if let Some(parent) = output.parent() {
-                std::fs::create_dir_all(parent)
-                    .context("Failed to create output directory")?;
+                std::fs::create_dir_all(parent).context("Failed to create output directory")?;
             }
 
             // Load noise texture
-            let noise_texture = BlueNoiseTexture::load(&noise)
-                .context("Failed to load blue noise texture")?;
+            let noise_texture =
+                BlueNoiseTexture::load(&noise).context("Failed to load blue noise texture")?;
 
             // Apply dithering
             let options = DitherOptions {

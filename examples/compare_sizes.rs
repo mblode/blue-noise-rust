@@ -9,7 +9,6 @@
  *
  * Note: Use --release mode for faster generation!
  */
-
 use blue_noise::{BlueNoiseConfig, BlueNoiseGenerator, save_blue_noise_to_png};
 use std::time::Instant;
 
@@ -37,7 +36,10 @@ fn generate_and_time(size: usize, seed: u32) -> Result<f64, Box<dyn std::error::
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Blue Noise Size Comparison\n");
     println!("Generating textures of different sizes...\n");
-    println!("{:<12} {:<15} {:<15} {:<15}", "Size", "FFT Optimized", "Time (sec)", "Output File");
+    println!(
+        "{:<12} {:<15} {:<15} {:<15}",
+        "Size", "FFT Optimized", "Time (sec)", "Output File"
+    );
     println!("{}", "-".repeat(65));
 
     let sizes: Vec<usize> = vec![16, 32, 64, 128];

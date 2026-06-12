@@ -82,7 +82,6 @@
 //! - Ulichney, R. (1993). "Void-and-cluster method for dither array generation"
 //! - Ulichney, R. (1988). "Dithering with blue noise"
 
-#![doc(html_root_url = "https://docs.rs/blue-noise/0.2.0")]
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
 
@@ -93,9 +92,8 @@ pub mod generator;
 
 // Re-export main types for convenience
 pub use dither::{
-    apply_dithering, BlueNoiseTexture, Color, DitherError, DitherOptions,
+    BlueNoiseTexture, Color, DitherError, DitherOptions, apply_dithering, apply_dithering_to_image,
 };
 pub use generator::{
-    save_blue_noise_to_png, BlueNoiseConfig, BlueNoiseGenerator,
-    BlueNoiseResult, GeneratorError,
+    BlueNoiseConfig, BlueNoiseGenerator, BlueNoiseResult, GeneratorError, save_blue_noise_to_png,
 };

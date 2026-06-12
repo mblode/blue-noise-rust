@@ -72,11 +72,10 @@
  *
  * For production use, pre-generate textures rather than generating at runtime.
  */
-
 use image::{GrayImage, ImageBuffer, Luma};
 use indicatif::{ProgressBar, ProgressStyle};
-use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 use std::path::Path;
 use thiserror::Error;
 
@@ -124,8 +123,8 @@ pub struct BlueNoiseResult {
 /// Error types for blue noise generation
 #[derive(Error, Debug)]
 pub enum GeneratorError {
-    /// Width or height is zero or negative
-    #[error("Width and height must be positive")]
+    /// Width or height is zero or too large to process safely
+    #[error("Width and height must be positive and small enough to process safely")]
     InvalidDimensions,
 
     /// Sigma parameter is zero or negative
@@ -174,12 +173,21 @@ impl SeededRandom {
         t = t.wrapping_mul(1 | self.seed);
         t ^= t.wrapping_add(t.wrapping_mul(t ^ (t >> 7)).wrapping_mul(61 | t));
         let bits = t ^ (t >> 14);
+        Self::normalize(bits)
+    }
+
+    fn normalize(bits: u32) -> f32 {
         // Map a u32 into [0, 1) using only the top 24 bits, which fit exactly
         // in an f32 mantissa. Dividing a full u32 by 2^32 as f32 can round up to
         // exactly 1.0 for the top 128 values, which then makes
         // `(next() * area) as usize == area` and panics with an out-of-bounds
         // index. 2^24 is exactly representable, so the result is always < 1.0.
         ((bits >> 8) as f32) / 16_777_216.0
+    }
+
+    fn index_below(&mut self, upper_bound: usize) -> usize {
+        debug_assert!(upper_bound > 0);
+        ((self.next() * upper_bound as f32) as usize).min(upper_bound - 1)
     }
 }
 
@@ -210,6 +218,7 @@ pub struct BlueNoiseGenerator {
 
     // FFT optimization
     use_fft: bool,
+    gaussian_kernel: Vec<f32>,
     gaussian_kernel_freq: Option<Vec<Complex<f32>>>,
 
     // Progress bar
@@ -238,7 +247,19 @@ impl BlueNoiseGenerator {
             return Err(GeneratorError::InvalidDensity);
         }
 
-        let area = config.width * config.height;
+        if config.width > u32::MAX as usize || config.height > u32::MAX as usize {
+            return Err(GeneratorError::InvalidDimensions);
+        }
+
+        let area = config
+            .width
+            .checked_mul(config.height)
+            .ok_or(GeneratorError::InvalidDimensions)?;
+
+        if area > i32::MAX as usize || area.checked_mul(Self::MAX_ITERATIONS_MULTIPLIER).is_none() {
+            return Err(GeneratorError::InvalidDimensions);
+        }
+
         let use_fft = Self::is_power_of_two(config.width) && Self::is_power_of_two(config.height);
 
         let progress = if config.verbose {
@@ -271,12 +292,16 @@ impl BlueNoiseGenerator {
             energy: vec![0.0; area],
             ones_count: 0,
             use_fft,
+            gaussian_kernel: Vec::new(),
             gaussian_kernel_freq: None,
             progress,
         };
 
+        generator.gaussian_kernel = generator.create_gaussian_kernel();
+
         if use_fft {
-            generator.gaussian_kernel_freq = Some(generator.create_gaussian_kernel_fft());
+            generator.gaussian_kernel_freq =
+                Some(generator.fft_2d_forward(&generator.gaussian_kernel));
         }
 
         Ok(generator)
@@ -290,7 +315,7 @@ impl BlueNoiseGenerator {
      * the kernel in frequency space, we only need to compute FFT once during
      * initialization rather than for every blur operation.
      */
-    fn create_gaussian_kernel_fft(&self) -> Vec<Complex<f32>> {
+    fn create_gaussian_kernel(&self) -> Vec<f32> {
         let mut kernel = vec![0.0f32; self.area];
         let divisor = 2.0 * self.sigma * self.sigma;
 
@@ -311,18 +336,15 @@ impl BlueNoiseGenerator {
             *val /= sum;
         }
 
-        // Transform to frequency domain
-        self.fft_2d_forward(&kernel)
+        kernel
     }
 
     /**
      * Perform 2D FFT on real-valued data
      */
     fn fft_2d_forward(&self, data: &[f32]) -> Vec<Complex<f32>> {
-        let mut complex_data: Vec<Complex<f32>> = data
-            .iter()
-            .map(|&x| Complex::new(x, 0.0))
-            .collect();
+        let mut complex_data: Vec<Complex<f32>> =
+            data.iter().map(|&x| Complex::new(x, 0.0)).collect();
 
         // FFT on rows
         let mut planner = FftPlanner::new();
@@ -382,9 +404,7 @@ impl BlueNoiseGenerator {
         }
 
         // Extract real parts and normalize
-        data.iter()
-            .map(|c| c.re / (self.area as f32))
-            .collect()
+        data.iter().map(|c| c.re / (self.area as f32)).collect()
     }
 
     /**
@@ -423,29 +443,16 @@ impl BlueNoiseGenerator {
      */
     fn gaussian_blur_spatial(&self, data: &[u8]) -> Vec<f32> {
         let mut blurred = vec![0.0f32; self.area];
-        let kernel_radius = (3.0 * self.sigma).ceil() as i32;
-        let divisor = 2.0 * self.sigma * self.sigma;
 
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let mut sum = 0.0;
-                let mut weight_sum = 0.0;
+        for (source_idx, &source) in data.iter().enumerate().take(self.area) {
+            let value = source as f32;
+            if value == 0.0 {
+                continue;
+            }
 
-                for ky in -kernel_radius..=kernel_radius {
-                    for kx in -kernel_radius..=kernel_radius {
-                        // Wrap coordinates (torus topology)
-                        let px = ((x as i32 + kx + self.width as i32) % self.width as i32) as usize;
-                        let py = ((y as i32 + ky + self.height as i32) % self.height as i32) as usize;
-
-                        let dist_sq = (kx * kx + ky * ky) as f32;
-                        let weight = (-dist_sq / divisor).exp();
-
-                        sum += data[py * self.width + px] as f32 * weight;
-                        weight_sum += weight;
-                    }
-                }
-
-                blurred[y * self.width + x] = sum / weight_sum;
+            for (target_idx, target) in blurred.iter_mut().enumerate() {
+                let kernel_idx = self.kernel_index_for_delta(source_idx, target_idx);
+                *target += value * self.gaussian_kernel[kernel_idx];
             }
         }
 
@@ -517,8 +524,49 @@ impl BlueNoiseGenerator {
      */
     fn set_bit(&mut self, idx: usize, value: u8) {
         let old_value = self.bitmap[idx];
+        if old_value == value {
+            return;
+        }
+
         self.bitmap[idx] = value;
         self.ones_count = self.ones_count + value as usize - old_value as usize;
+    }
+
+    fn set_bit_and_update_energy(&mut self, idx: usize, value: u8) {
+        let old_value = self.bitmap[idx];
+        if old_value == value {
+            return;
+        }
+
+        self.set_bit(idx, value);
+        self.apply_energy_delta(idx, value as f32 - old_value as f32);
+    }
+
+    fn kernel_index_for_delta(&self, source_idx: usize, target_idx: usize) -> usize {
+        let source_x = source_idx % self.width;
+        let source_y = source_idx / self.width;
+        let target_x = target_idx % self.width;
+        let target_y = target_idx / self.width;
+
+        let dx = if target_x >= source_x {
+            target_x - source_x
+        } else {
+            self.width - source_x + target_x
+        };
+        let dy = if target_y >= source_y {
+            target_y - source_y
+        } else {
+            self.height - source_y + target_y
+        };
+
+        dy * self.width + dx
+    }
+
+    fn apply_energy_delta(&mut self, idx: usize, delta: f32) {
+        for target_idx in 0..self.area {
+            let kernel_idx = self.kernel_index_for_delta(idx, target_idx);
+            self.energy[target_idx] += delta * self.gaussian_kernel[kernel_idx];
+        }
     }
 
     /**
@@ -553,18 +601,18 @@ impl BlueNoiseGenerator {
      * This phase establishes the foundation for even distribution.
      */
     fn phase0_generate_initial_pattern(&mut self) -> Result<()> {
-        if self.verbose {
-            if let Some(pb) = &self.progress {
-                pb.set_message("Phase 0: Generating initial pattern");
-                pb.set_position(0);
-            }
+        if self.verbose
+            && let Some(pb) = &self.progress
+        {
+            pb.set_message("Phase 0: Generating initial pattern");
+            pb.set_position(0);
         }
 
         let target_points = (self.area as f32 * self.initial_density) as usize;
 
         // Randomly place initial points
         while self.count_ones() < target_points {
-            let idx = (self.random.next() * self.area as f32) as usize;
+            let idx = self.random.index_below(self.area);
             if self.bitmap[idx] == 0 {
                 self.set_bit(idx, 1);
             }
@@ -573,38 +621,40 @@ impl BlueNoiseGenerator {
         self.recalculate_energy();
 
         // Redistribute points until convergence
-        let max_iterations = self.area * self.max_iterations_multiplier;
+        let max_iterations = self
+            .area
+            .checked_mul(self.max_iterations_multiplier)
+            .ok_or(GeneratorError::InvalidDimensions)?;
         let mut iterations = 0;
 
         while iterations < max_iterations {
             iterations += 1;
 
             // Find tightest cluster and remove it
-            let cluster_idx = self.find_tightest_cluster()
+            let cluster_idx = self
+                .find_tightest_cluster()
                 .ok_or(GeneratorError::ConvergenceError)?;
-            self.set_bit(cluster_idx, 0);
+            self.set_bit_and_update_energy(cluster_idx, 0);
 
             // Find largest void with updated energy
-            self.recalculate_energy();
-            let void_idx = self.find_largest_void()
+            let void_idx = self
+                .find_largest_void()
                 .ok_or(GeneratorError::ConvergenceError)?;
 
             // Check for convergence
             if void_idx == cluster_idx {
-                self.set_bit(cluster_idx, 1);
-                self.recalculate_energy();
+                self.set_bit_and_update_energy(cluster_idx, 1);
                 break;
             }
 
             // Place point in void
-            self.set_bit(void_idx, 1);
-            self.recalculate_energy();
+            self.set_bit_and_update_energy(void_idx, 1);
         }
 
-        if self.verbose {
-            if let Some(pb) = &self.progress {
-                pb.set_position(20);
-            }
+        if self.verbose
+            && let Some(pb) = &self.progress
+        {
+            pb.set_position(20);
         }
 
         Ok(())
@@ -619,29 +669,29 @@ impl BlueNoiseGenerator {
      * the blue noise distribution.
      */
     fn phase1_serialize_initial_points(&mut self) -> Result<()> {
-        if self.verbose {
-            if let Some(pb) = &self.progress {
-                pb.set_message("Phase 1: Serializing initial points");
-                pb.set_position(20);
-            }
+        if self.verbose
+            && let Some(pb) = &self.progress
+        {
+            pb.set_message("Phase 1: Serializing initial points");
+            pb.set_position(20);
         }
 
         let mut rank_counter = self.count_ones() as i32 - 1;
 
         while self.count_ones() > 0 {
-            let cluster_idx = self.find_tightest_cluster()
+            let cluster_idx = self
+                .find_tightest_cluster()
                 .ok_or(GeneratorError::ConvergenceError)?;
             self.rank[cluster_idx] = rank_counter;
             rank_counter -= 1;
 
-            self.set_bit(cluster_idx, 0);
-            self.recalculate_energy();
+            self.set_bit_and_update_energy(cluster_idx, 0);
         }
 
-        if self.verbose {
-            if let Some(pb) = &self.progress {
-                pb.set_position(40);
-            }
+        if self.verbose
+            && let Some(pb) = &self.progress
+        {
+            pb.set_position(40);
         }
 
         Ok(())
@@ -655,11 +705,11 @@ impl BlueNoiseGenerator {
      * to area/2. This builds up a minority pattern (less than half full).
      */
     fn phase2_fill_to_half(&mut self, prototype: &[u8], initial_points: usize) -> Result<()> {
-        if self.verbose {
-            if let Some(pb) = &self.progress {
-                pb.set_message("Phase 2: Filling to half capacity");
-                pb.set_position(40);
-            }
+        if self.verbose
+            && let Some(pb) = &self.progress
+        {
+            pb.set_message("Phase 2: Filling to half capacity");
+            pb.set_position(40);
         }
 
         self.bitmap.copy_from_slice(prototype);
@@ -670,19 +720,19 @@ impl BlueNoiseGenerator {
         let half_area = self.area / 2;
 
         while self.count_ones() < half_area {
-            let void_idx = self.find_largest_void()
+            let void_idx = self
+                .find_largest_void()
                 .ok_or(GeneratorError::ConvergenceError)?;
             self.rank[void_idx] = rank_counter;
             rank_counter += 1;
 
-            self.set_bit(void_idx, 1);
-            self.recalculate_energy();
+            self.set_bit_and_update_energy(void_idx, 1);
         }
 
-        if self.verbose {
-            if let Some(pb) = &self.progress {
-                pb.set_position(60);
-            }
+        if self.verbose
+            && let Some(pb) = &self.progress
+        {
+            pb.set_position(60);
         }
 
         Ok(())
@@ -697,11 +747,11 @@ impl BlueNoiseGenerator {
      * algorithm to work symmetrically for both minority and majority patterns.
      */
     fn phase3_fill_to_completion(&mut self, mut rank_counter: i32) -> Result<()> {
-        if self.verbose {
-            if let Some(pb) = &self.progress {
-                pb.set_message("Phase 3: Filling to completion");
-                pb.set_position(60);
-            }
+        if self.verbose
+            && let Some(pb) = &self.progress
+        {
+            pb.set_message("Phase 3: Filling to completion");
+            pb.set_position(60);
         }
 
         // Invert bitmap
@@ -712,19 +762,19 @@ impl BlueNoiseGenerator {
         self.recalculate_energy();
 
         while rank_counter < self.area as i32 {
-            let cluster_idx = self.find_tightest_cluster()
+            let cluster_idx = self
+                .find_tightest_cluster()
                 .ok_or(GeneratorError::ConvergenceError)?;
             self.rank[cluster_idx] = rank_counter;
             rank_counter += 1;
 
-            self.set_bit(cluster_idx, 0);
-            self.recalculate_energy();
+            self.set_bit_and_update_energy(cluster_idx, 0);
         }
 
-        if self.verbose {
-            if let Some(pb) = &self.progress {
-                pb.set_position(80);
-            }
+        if self.verbose
+            && let Some(pb) = &self.progress
+        {
+            pb.set_position(80);
         }
 
         Ok(())
@@ -738,11 +788,11 @@ impl BlueNoiseGenerator {
      * ranked pixels will be turned "on" first when dithering bright images.
      */
     fn phase4_convert_to_threshold_map(&self) -> Vec<u8> {
-        if self.verbose {
-            if let Some(pb) = &self.progress {
-                pb.set_message("Phase 4: Converting to threshold map");
-                pb.set_position(80);
-            }
+        if self.verbose
+            && let Some(pb) = &self.progress
+        {
+            pb.set_message("Phase 4: Converting to threshold map");
+            pb.set_position(80);
         }
 
         let output: Vec<u8> = self
@@ -751,11 +801,11 @@ impl BlueNoiseGenerator {
             .map(|&r| ((r as usize * self.threshold_map_levels) / self.area) as u8)
             .collect();
 
-        if self.verbose {
-            if let Some(pb) = &self.progress {
-                pb.set_position(100);
-                pb.finish_with_message("Blue noise generation complete");
-            }
+        if self.verbose
+            && let Some(pb) = &self.progress
+        {
+            pb.set_position(100);
+            pb.finish_with_message("Blue noise generation complete");
         }
 
         output
@@ -774,7 +824,11 @@ impl BlueNoiseGenerator {
             );
             println!(
                 "Using {} Gaussian blur",
-                if self.use_fft { "FFT-optimized" } else { "spatial" }
+                if self.use_fft {
+                    "FFT-optimized"
+                } else {
+                    "spatial"
+                }
             );
         }
 
@@ -814,17 +868,17 @@ impl BlueNoiseGenerator {
 /**
  * Save blue noise texture to PNG file
  */
-pub fn save_blue_noise_to_png<P: AsRef<Path>>(
-    result: &BlueNoiseResult,
-    filename: P,
-) -> Result<()> {
+pub fn save_blue_noise_to_png<P: AsRef<Path>>(result: &BlueNoiseResult, filename: P) -> Result<()> {
     let img: GrayImage = ImageBuffer::from_fn(result.width as u32, result.height as u32, |x, y| {
         let idx = y as usize * result.width + x as usize;
         Luma([result.data[idx]])
     });
 
     img.save(&filename)?;
-    println!("Saved blue noise texture to {}", filename.as_ref().display());
+    println!(
+        "Saved blue noise texture to {}",
+        filename.as_ref().display()
+    );
 
     Ok(())
 }
@@ -852,7 +906,7 @@ mod tests {
         // `(next() * area) as usize` can never equal `area` (see issue #3).
         for _ in 0..5_000_000 {
             let val = rng.next();
-            assert!(val >= 0.0 && val < 1.0, "out of range: {val}");
+            assert!((0.0..1.0).contains(&val), "out of range: {val}");
         }
 
         // The bug was that `next()` cannot return exactly 1.0. `next()` draws
@@ -860,7 +914,6 @@ mod tests {
         // directly. Instead, verify the conversion formula `next()` uses is
         // safe for the worst-case inputs: the top u32 values are exactly the
         // ones that previously rounded up to 1.0f32 when divided by 2^32.
-        let to_unit = |bits: u32| ((bits >> 8) as f32) / 16_777_216.0;
         for bits in [
             u32::MAX,
             u32::MAX - 1,
@@ -869,11 +922,22 @@ mod tests {
             0,
             1,
         ] {
-            let val = to_unit(bits);
-            assert!(val >= 0.0 && val < 1.0, "boundary {bits} -> {val}");
+            let val = SeededRandom::normalize(bits);
+            assert!((0.0..1.0).contains(&val), "boundary {bits} -> {val}");
         }
         // The single largest possible output must still be < 1.0.
-        assert!(to_unit(u32::MAX) < 1.0);
+        assert!(SeededRandom::normalize(u32::MAX) < 1.0);
+    }
+
+    #[test]
+    fn test_seeded_random_index_below_never_returns_upper_bound() {
+        let mut rng = SeededRandom::new(Some(12345));
+
+        assert_eq!(rng.index_below(1), 0);
+
+        for _ in 0..1000 {
+            assert!(rng.index_below(262_144) < 262_144);
+        }
     }
 
     #[test]
@@ -949,6 +1013,22 @@ mod tests {
             ..Default::default()
         };
         assert!(BlueNoiseGenerator::new(config).is_err());
+
+        // Overflowing area should fail before allocation
+        let config = BlueNoiseConfig {
+            width: usize::MAX,
+            height: 2,
+            ..Default::default()
+        };
+        assert!(BlueNoiseGenerator::new(config).is_err());
+
+        // Rank counters use i32 internally, so larger areas are rejected
+        let config = BlueNoiseConfig {
+            width: i32::MAX as usize + 1,
+            height: 1,
+            ..Default::default()
+        };
+        assert!(BlueNoiseGenerator::new(config).is_err());
     }
 
     #[test]
@@ -969,9 +1049,32 @@ mod tests {
         assert_eq!(result.height, 16);
         assert_eq!(result.data.len(), 256);
 
-        // Check all values are in valid range
-        for &val in &result.data {
-            assert!(val <= 255);
+        assert!(result.data.iter().any(|&val| val > 0));
+        assert!(result.data.iter().any(|&val| val < 255));
+    }
+
+    #[test]
+    fn test_incremental_energy_matches_full_recalculation() {
+        let config = BlueNoiseConfig {
+            width: 8,
+            height: 8,
+            sigma: 1.5,
+            seed: Some(42),
+            verbose: false,
+            ..Default::default()
+        };
+
+        let mut generator = BlueNoiseGenerator::new(config).unwrap();
+        generator.set_bit(0, 1);
+        generator.recalculate_energy();
+
+        generator.set_bit_and_update_energy(17, 1);
+        let incremental = generator.energy.clone();
+
+        generator.recalculate_energy();
+
+        for (incremental, recalculated) in incremental.iter().zip(generator.energy.iter()) {
+            assert!((incremental - recalculated).abs() < 0.000_01);
         }
     }
 
@@ -1111,6 +1214,6 @@ mod tests {
         assert_eq!(config.sigma, 1.9);
         assert_eq!(config.initial_density, 0.1);
         assert_eq!(config.seed, None);
-        assert_eq!(config.verbose, false);
+        assert!(!config.verbose);
     }
 }
