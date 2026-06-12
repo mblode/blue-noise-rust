@@ -173,7 +173,13 @@ impl SeededRandom {
         let mut t = self.seed ^ (self.seed >> 15);
         t = t.wrapping_mul(1 | self.seed);
         t ^= t.wrapping_add(t.wrapping_mul(t ^ (t >> 7)).wrapping_mul(61 | t));
-        ((t ^ (t >> 14)) as f32) / 4294967296.0
+        let bits = t ^ (t >> 14);
+        // Map a u32 into [0, 1) using only the top 24 bits, which fit exactly
+        // in an f32 mantissa. Dividing a full u32 by 2^32 as f32 can round up to
+        // exactly 1.0 for the top 128 values, which then makes
+        // `(next() * area) as usize == area` and panics with an out-of-bounds
+        // index. 2^24 is exactly representable, so the result is always < 1.0.
+        ((bits >> 8) as f32) / 16_777_216.0
     }
 }
 
@@ -842,11 +848,32 @@ mod tests {
     fn test_seeded_random_range() {
         let mut rng = SeededRandom::new(Some(12345));
 
-        // All values should be in [0, 1)
-        for _ in 0..1000 {
+        // All values should be in [0, 1), and crucially strictly < 1.0 so that
+        // `(next() * area) as usize` can never equal `area` (see issue #3).
+        for _ in 0..5_000_000 {
             let val = rng.next();
-            assert!(val >= 0.0 && val < 1.0);
+            assert!(val >= 0.0 && val < 1.0, "out of range: {val}");
         }
+
+        // The bug was that `next()` cannot return exactly 1.0. `next()` draws
+        // from internal state, so we can't feed it the boundary `u32` values
+        // directly. Instead, verify the conversion formula `next()` uses is
+        // safe for the worst-case inputs: the top u32 values are exactly the
+        // ones that previously rounded up to 1.0f32 when divided by 2^32.
+        let to_unit = |bits: u32| ((bits >> 8) as f32) / 16_777_216.0;
+        for bits in [
+            u32::MAX,
+            u32::MAX - 1,
+            u32::MAX - 127,
+            4_294_967_168, // u32::MAX - 127, the first value that used to overflow to 1.0
+            0,
+            1,
+        ] {
+            let val = to_unit(bits);
+            assert!(val >= 0.0 && val < 1.0, "boundary {bits} -> {val}");
+        }
+        // The single largest possible output must still be < 1.0.
+        assert!(to_unit(u32::MAX) < 1.0);
     }
 
     #[test]
