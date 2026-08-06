@@ -1,115 +1,104 @@
+<div align="center">
+
 # Blue Noise
 
-A Rust library and CLI for generating blue noise textures and dithering images using the void-and-cluster algorithm.
+**Black and white image dithering using blue noise, plus a void-and-cluster generator for the noise itself**
 
-[![Crates.io](https://img.shields.io/crates/v/blue-noise.svg)](https://crates.io/crates/blue-noise)
-[![Documentation](https://docs.rs/blue-noise/badge.svg)](https://docs.rs/blue-noise)
+Turn a photograph into two colors without the crosshatch of an ordered dither.
 
-## Installation
+<p align="center">
+  <a href="https://crates.io/crates/blue-noise">
+    <img src="https://img.shields.io/crates/v/blue-noise?style=flat&colorA=000000&colorB=000000" />
+  </a>
+  <a href="https://github.com/mblode/blue-noise-rust/blob/main/LICENSE.md">
+    <img src="https://img.shields.io/github/license/mblode/blue-noise-rust?style=flat&colorA=000000&colorB=000000" />
+  </a>
+</p>
+
+</div>
+
+<p align="center">
+  <img alt="Source photograph" src="img/dark.png" width="320" />
+  <img alt="The same photograph dithered with blue noise" src="img/dark-noise.jpg" width="320" />
+</p>
+
+## Install
+
+```bash
+cargo add blue-noise
+```
+
+## Quickstart
+
+```rust
+use blue_noise::{
+    BlueNoiseConfig, BlueNoiseGenerator, BlueNoiseTexture, Color, DitherOptions, apply_dithering,
+    save_blue_noise_to_png,
+};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = BlueNoiseConfig {
+        width: 64,
+        height: 64,
+        seed: Some(42),
+        ..Default::default()
+    };
+    let result = BlueNoiseGenerator::new(config)?.generate()?;
+    save_blue_noise_to_png(&result, "blue-noise.png")?;
+
+    let noise = BlueNoiseTexture::load("blue-noise.png")?;
+    apply_dithering(
+        "photo.jpg",
+        "photo-dithered.png",
+        &noise,
+        DitherOptions {
+            foreground: Color::from_hex("#1447e5")?,
+            contrast: Some(1.2),
+            ..Default::default()
+        },
+    )?;
+
+    Ok(())
+}
+```
+
+`apply_dithering_to_image` takes and returns an in-memory image if you would rather not touch the filesystem.
+
+## CLI
 
 ```bash
 cargo install blue-noise
 ```
 
-Or build from source:
-
 ```bash
-git clone https://github.com/mblode/blue-noise.git
-cd blue-noise
-cargo build --release
+# Write a 128 by 128 tileable texture to blue-noise.png
+blue-noise generate --size 128 --verbose
+
+# Threshold a photo against it
+blue-noise dither -i photo.jpg -o photo-dithered.png
 ```
 
-## Usage
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sigma <f32>` | `1.9` | Gaussian sigma, higher spreads points further apart |
+| `--seed <u32>` | | Seed for a reproducible texture |
+| `--noise <path>` | `blue-noise.png` | Texture the dither thresholds against |
+| `--contrast <f32>` | | Contrast adjustment, above 1 for more |
 
-### Generate a texture
+`--width` and `--height` override `--size` for a non-square texture, and resize the output when dithering. Full lists are in `blue-noise generate --help` and `blue-noise dither --help`.
 
-```bash
-blue-noise generate --size 128 --output blue-noise.png
-blue-noise generate --width 256 --height 128 --output blue-noise-wide.png
-```
+## Notes
 
-Options:
-- `--size` - Texture size in pixels (default: 128)
-- `--width` - Texture width in pixels (overrides `--size`)
-- `--height` - Texture height in pixels (overrides `--size`)
-- `--output` - Output file path
-- `--sigma` - Gaussian sigma, 1.0-3.0 (default: 1.9)
-- `--seed` - Random seed for reproducibility
-- `--verbose` - Show progress
-
-### Dither an image
-
-```bash
-blue-noise dither -i input.jpg -o output.png
-```
-
-Options:
-- `--input` - Input image
-- `--output` - Output image
-- `--noise` - Blue noise texture (default: blue-noise.png)
-- `--foreground` - Foreground color as hex (default: #000000)
-- `--background` - Background color as hex (default: #ffffff)
-- `--width` - Output width
-- `--height` - Output height
-- `--contrast` - Contrast adjustment (default: 1.0)
-
-## Library
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-blue-noise = "0.2"
-```
-
-Generate a texture:
-
-```rust
-use blue_noise::{BlueNoiseGenerator, BlueNoiseConfig, save_blue_noise_to_png};
-
-let config = BlueNoiseConfig {
-    width: 128,
-    height: 128,
-    sigma: 1.9,
-    seed: Some(42),
-    ..Default::default()
-};
-
-let generator = BlueNoiseGenerator::new(config)?;
-let result = generator.generate()?;
-save_blue_noise_to_png(&result, "blue-noise.png")?;
-```
-
-Apply dithering:
-
-```rust
-use blue_noise::{BlueNoiseTexture, Color, DitherOptions, apply_dithering};
-
-let noise = BlueNoiseTexture::load("blue-noise.png")?;
-let options = DitherOptions {
-    foreground: Color::from_hex("#000000")?,
-    background: Color::from_hex("#ffffff")?,
-    width: Some(800),
-    height: None,
-    contrast: Some(1.2),
-};
-
-apply_dithering("input.jpg", "output.png", &noise, options)?;
-```
-
-## Examples
-
-![Input dark](/img/dark.png)
-![Output dark](/img/dark-noise.jpg)
-
-![Input light](/img/light.png)
-![Output light](/img/light-noise.jpg)
-
-## References
-
-- Ulichney, R. (1993). "Void-and-cluster method for dither array generation"
-- Ulichney, R. (1988). "Dithering with blue noise"
+- Distances wrap at the edges, so a texture tiles seamlessly across an image of any size.
+- Power-of-two sizes run their Gaussian blur through an FFT, roughly halving generation time. Generate once and reuse the file.
+- Uses the void-and-cluster algorithm from [Ulichney (1993)](https://doi.org/10.1117/12.152707), building on [Ulichney (1988)](https://doi.org/10.1109/5.3288).
+- [blue-noise-typescript](https://github.com/mblode/blue-noise-typescript) is the same dithering as a Node CLI, published on npm.
+- API documentation is on [docs.rs](https://docs.rs/blue-noise).
 
 ## License
 
 MIT
+
+---
+
+Crafted by [<img src="https://blode.co/avatar-circle.png" width="20" align="top" />](https://blode.co) [Matthew Blode](https://blode.co)
